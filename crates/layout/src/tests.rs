@@ -4675,6 +4675,50 @@ fn an_empty_continuous_section_mark_takes_no_room() {
     assert_eq!(new_page[1].0, 1, "a next-page section starts a page: {new_page:?}");
 }
 
+/// An empty paragraph that only carries a section break never opens a page of its own, even
+/// before a section starting on a new page: when the page is full, Word keeps the mark at its
+/// foot (into the bottom margin) and the next section starts on the page after. Inferred from
+/// Word's rendering of a government form (8 pages; WordCraft gave 10, a blank page after each of
+/// two cover tables filling their page, where the mark's space before and line could not fit:
+/// 18.95 and 6.95 pt left) and from the height arithmetic, not measured on synthetic cases like
+/// R21. A mark with text still carries over as usual.
+#[test]
+fn an_empty_section_mark_never_opens_a_page() {
+    use wordcraft_doc::section::{SectionProps, SectionStart};
+    // (page of the mark, page of the next section's first paragraph, pages) after `fillers`
+    // one-line paragraphs.
+    let pages = |fillers: usize, mark: &str| {
+        let mut d = Document::new();
+        let plain = ParaProps {
+            space_before: Some(0.0),
+            space_after: Some(0.0),
+            line_spacing: Some(wordcraft_doc::props::LineSpacing::Multiple(1.0)),
+            ..Default::default()
+        };
+        let para = |text: &str| {
+            let mut x = wordcraft_doc::Paragraph::with_text(text, Default::default());
+            x.props = plain.clone();
+            wordcraft_doc::para_block(x)
+        };
+        d.body = (0..fillers).map(|i| para(&format!("F{i}"))).collect();
+        let mut m = wordcraft_doc::Paragraph::with_text(mark, Default::default());
+        m.props = ParaProps { space_before: Some(10.0), ..plain.clone() };
+        m.section = Some(Box::new(SectionProps::default()));
+        d.body.push(wordcraft_doc::para_block(m));
+        d.body.push(para("NX"));
+        d.last_section.start = SectionStart::NextPage;
+        let l = lay(&d);
+        let k = fillers;
+        (l.caret(&Pos::body(k, 0)).unwrap().page, l.caret(&Pos::body(k + 1, 0)).unwrap().page, l.pages.len())
+    };
+    // The fillers just fill the first page: a mark with text goes over to the second.
+    let full = (20..90).find(|n| pages(*n, "Mark").0 == 1).expect("a filler count that fills the page");
+    assert_eq!(pages(full - 1, "Mark"), (0, 1, 2), "with room left the mark stays and the section follows");
+    assert_eq!(pages(full, "Mark"), (1, 2, 3), "a mark with text carries over, the section after it");
+    assert_eq!(pages(full - 1, ""), (0, 1, 2), "an empty mark with room: the section on the next page");
+    assert_eq!(pages(full, ""), (0, 1, 2), "an empty mark without room stays on the full page: no blank page");
+}
+
 /// A floating object positioned relative to its paragraph is measured from the paragraph's start
 /// above its space before, measured in Word for Windows (`plan/word` R22, 10 cases: 0, 10 and 20
 /// pt before, offsets 0 and −7.2 pt; the previous paragraph's space after still counts). The SARP

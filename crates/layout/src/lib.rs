@@ -600,8 +600,8 @@ struct Ctx<'a> {
     uses_totals: bool,
     /// Whether to note `uses_totals` now (off while laying out headers and footers).
     track_totals: bool,
-    /// Body blocks that are empty paragraphs carrying only a section break before a continuous
-    /// section, in order: they take no room (see [`place_para`]).
+    /// Body blocks that are empty paragraphs carrying only a section break (one followed by
+    /// another section), in order: they take no room and never open a page (see [`place_para`]).
     quiet_marks: Vec<usize>,
 }
 
@@ -1803,12 +1803,10 @@ fn layout_pass(
     let web = matches!(opts.view, ViewMode::Web | ViewMode::Draft | ViewMode::Outline);
     let read = opts.view == ViewMode::Read;
     let reflow = web || read;
-    ctx.quiet_marks = sections
-        .windows(2)
-        .filter(|w| w[1].1.start == SectionStart::Continuous)
-        .map(|w| w[0].0)
-        .filter(|end| doc.body.get(*end).and_then(|b| b.as_para()).is_some_and(|p| p.text.is_empty()))
-        .collect();
+    // Every section but the last ends in a paragraph holding its properties; an empty one is a
+    // bare section mark, whatever the next section's start.
+    ctx.quiet_marks =
+        sections.windows(2).map(|w| w[0].0).filter(|end| doc.body.get(*end).and_then(|b| b.as_para()).is_some_and(|p| p.text.is_empty())).collect();
     let outline = (opts.view == ViewMode::Outline).then(|| OutlinePass::new(doc, opts.outline.clone().unwrap_or_default()));
     let default_sect = SectionProps::default();
     let mut web_sect;
@@ -2678,9 +2676,12 @@ fn para_notes(doc: &Document, p: &Paragraph, pl: &ParaLayout) -> Vec<(usize, u32
     notes
 }
 
-/// Place a body paragraph. An empty paragraph that only carries a section break before a
-/// continuous section takes no room (Word for Windows: the text after it follows right on, and
-/// columns balanced above it don't count it).
+/// Place a body paragraph. An empty paragraph that only carries a section break takes no room
+/// and never opens a page of its own. Before a continuous section (Word for Windows) the text
+/// after it follows right on, and columns balanced above it don't count it. Before a section on
+/// a new page, Word keeps the mark at the foot of the full page (into the bottom margin if need
+/// be) rather than carrying it over to an otherwise blank page: a government form whose cover
+/// tables fill their pages had two blank pages that Word's rendering (8 pages) does not.
 fn place_para(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, block: usize, body_top: f32) {
     if !pb.web && ctx.quiet_marks.binary_search(&block).is_ok() {
         // Its (empty) line stays where the text ended, even at the bottom of a full column.

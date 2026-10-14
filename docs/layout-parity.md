@@ -79,6 +79,7 @@ font can't match Word's metrics.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-15 | trivial | An empty paragraph carrying only a section break never opens a page of its own, whatever the next section's start: at the foot of a full page it stays there and the next-page section starts on the page after (a government form's cover tables filling their pages gave two blank pages that Word's rendering does not; inferred from the oracle PDF and the height arithmetic, not measured in Word) |
 | 2026-10-13 | trivial | A shape or picture dragged into another column anchors there, so the text in that column wraps around it (#884) |
 | 2026-10-13 | trivial | On a page with footnotes, a paragraph that ends there keeps its space after above the footnote separator; if it doesn't fit, its last line (and, with widow control, one more) goes to the next page with the note. Pages without notes are unchanged (#1116) |
 | 2026-10-12 | trivial | Spaces, tabs and ideographic spaces don't count toward a line's height, as in Word (a line of only them takes the paragraph mark's) |
