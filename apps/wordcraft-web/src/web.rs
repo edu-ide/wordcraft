@@ -12,6 +12,7 @@ const DOC_EXTS: &[&str] = &["docx", "docm", "dotx", "dotm", "doc", "dot", "odt",
 const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "bmp", "wmf", "emf"];
 const RECIPIENT_EXTS: &[&str] = &["csv", "tsv", "txt", "xlsx", "xlsm", "ods"];
 mod font_store;
+mod host;
 const CANVAS_ID: &str = "wordcraft_canvas";
 const LOADING_ID: &str = "wordcraft_loading";
 
@@ -28,7 +29,13 @@ pub fn start() {
         };
         let dirty = Rc::new(Cell::new(false));
         let saves = Rc::new(PickerSaves::default());
-        if let Err(e) = guard_unload(dirty.clone(), saves.clone()) {
+        // `?host=parent`: a same-origin page framing WordCraft opens documents in it, runs
+        // commands and stores what it saves (`host`); the parent guards leaving the page.
+        let bridge = if query_param("host").as_deref() == Some("parent") { host::Bridge::new() } else { None };
+        let app_bridge = bridge.clone();
+        if bridge.is_none()
+            && let Err(e) = guard_unload(dirty.clone(), saves.clone())
+        {
             log::error!("no unsaved-changes guard: {e}");
         }
         let mut options = eframe::WebOptions::default();
@@ -54,20 +61,31 @@ pub fn start() {
                     // The browser's locale picks the new document's paper, the units and the
                     // decimal separator (#838).
                     let region = wordcraft_ui_egui::i18n::system_region();
-                    let sample = query().contains("sample");
+                    let sample = app_bridge.is_none() && query().contains("sample");
                     let doc = if sample { wordcraft_engine::sample::sample_document() } else { wordcraft_engine::blank_document(&region) };
                     let mut session = Session::new(doc);
                     session.system_region = region;
-                    let mut app = WordApp::new(session, services(inbox.clone(), cc.egui_ctx.clone(), dirty, saves.clone()));
+                    let mut services = services(inbox.clone(), cc.egui_ctx.clone(), dirty, saves.clone());
+                    if let Some(bridge) = &app_bridge {
+                        bridge.connect(&mut services, inbox.clone(), cc.egui_ctx.clone());
+                    }
+                    let mut app = WordApp::new(session, services);
                     app.autosave = false;
                     // No document to show: start on File › Home, as the desktop app does (#766).
-                    if !sample {
+                    // In host mode the parent sends the document; the blank one shows meanwhile.
+                    if !sample && app_bridge.is_none() {
                         app.start_screen();
                     }
-                    Ok(Box::new(WebShell { app, inbox, saves }))
+                    if let Some(bridge) = &app_bridge {
+                        bridge.post_ready();
+                    }
+                    Ok(Box::new(WebShell { app, inbox, saves, bridge: app_bridge }))
                 }),
             )
             .await;
+        if let (Err(e), Some(bridge)) = (&result, &bridge) {
+            bridge.post_failed(&format!("{e:?}"));
+        }
         if let Some(el) = document.get_element_by_id(LOADING_ID) {
             match result {
                 Ok(()) => el.remove(),
@@ -81,12 +99,17 @@ fn query() -> String {
     web_sys::window().and_then(|w| w.location().search().ok()).unwrap_or_default()
 }
 
+fn query_param(key: &str) -> Option<String> {
+    web_sys::UrlSearchParams::new_with_str(&query()).ok()?.get(key)
+}
+
 /// Wraps the app to read dropped files asynchronously (browsers can't read them synchronously)
 /// and feed them through the inbox.
 struct WebShell {
     app: WordApp,
     inbox: Inbox,
     saves: Rc<PickerSaves>,
+    bridge: Option<host::Bridge>,
 }
 
 /// Saves the browser's save picker finishes after `download` has returned (#728). The app marks
@@ -139,6 +162,10 @@ impl eframe::App for WebShell {
         }
         self.settle_picker_saves();
         self.app.logic(ctx);
+        // The parent's commands, after the files it sent have opened (`logic` opens them).
+        if let Some(bridge) = &self.bridge {
+            bridge.run_commands(&mut self.app);
+        }
     }
 
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
